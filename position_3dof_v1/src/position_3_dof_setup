@@ -167,19 +167,6 @@ void setup(){
   pwm.setPWMFreq(50); // servos run at 50Hz
   Serial.begin(115200);
 
-   // Command home position
-    // setServoAngle(0, 90);
-    // setServoAngle(1, 90);
-    // setServoAngle(2, 90);
-    // delay(2000);
-
-    // Nudge joint 1 slightly positive in DH convention
-    // Watch physical joint - does it move the expected direction?
-    float q_test[3] = {M_PI/2, -M_PI/2, 0.0f};
-    for (int i = 0; i < 3; i++) {
-        setServoAngle(i, dhRadtoDeg(q_test[i], i));
-    }
-
 
 };
 
