@@ -34,6 +34,8 @@ const float q_home_rad[3] = {PI/2.0, -PI/2.0, 0.0f};
 const float servo_dir[3] = {1.0f,1.0f,1.0f};
 
 // CONTROL PARAMETERS
+float Kp = 5.0f;
+
 const float lambda = 0.1; // for DLS pseudoinverse //TWEAK
 const float dt = 0.02f; //20 ms loop  //TWEAK
 
@@ -41,8 +43,18 @@ const float DELTA = 1e-4f; // difference step for jacobian computation
 
 
 // JOINT VARIABLES
-// initial joint variables
+// initial joint variables/ home angles (vertically upright)
+// this corresponds to 90 90 90 on servos 
 float q[3] = {PI/2.0f, -PI/2.0, 0.0f};
+
+const float Q_MIN[3] = { 0.0f,   -M_PI,   -M_PI/2}; // +- 90 for each
+const float Q_MAX[3] = { M_PI,    0.0f,    M_PI/2};
+
+// starting position
+const float home_x = -3.0f;
+const float home_y = 0.0f;
+const float home_z = 41.5f;
+
 
 // DH TRANSFORM 
 
@@ -138,6 +150,7 @@ int dhRadtoDeg(float dh_rad, int joint) {
 // function to write all servos
 void writeServos() {
   for (int i = 0; i < 3; i++) {
+    Serial.print("\n reached writeServos \n");
     int deg = dhRadtoDeg(q[i], i);
     setServoAngle(i, deg);
   }
@@ -157,29 +170,107 @@ void printMatrix(BLA::Matrix<rows, cols> mat) {
     Serial.println();  // blank line after matrix
 }
 
+// DESIRED TARGET POINT
+float pd[3] = {home_x, home_y + 5.0f, home_z-5.0f};
+// float pd[3] = {6.0f, 9.5f, 20.0f};
+
+// convergence threshold (cm)
+const float pos_threshold = 0.5f;
+bool target_reached = false; 
 
 
+// CONTROLLER
+
+void ControlStep() {
+
+  // current end effector position
+  float px, py, pz;
+  forward_kinematics(q, px, py, pz); // calculate current pos. from fk
+
+
+  //error
+  float ex = pd[0] - px;
+  Serial.print("\n ex: \n");
+  Serial.println(ex);
+  float ey = pd[1] - py;
+  Serial.print("\n ey: \n");
+  Serial.println(ey);
+  float ez = pd[2] - pz;
+  Serial.print("\n ez: \n");
+  Serial.println(ez);
+  float norm_error = sqrt(ex*ex + ey*ey + ez*ez);
+  Serial.print("\n norm error \n");
+  Serial.println(norm_error);
+
+  // check converged
+
+  if(norm_error < pos_threshold) {
+
+    if(!target_reached) {
+      Serial.println("Target reached");
+      target_reached = true;
+    }
+
+    return;
+
+  }
+
+  // Jacobian
+  Matrix<3,3> J;
+  computeJacobian(q, J);
+
+  // // Debug - print J before inversion
+  // Serial.println("Jacobian:");
+  // printMatrix(J);
+
+  // dls inverse
+  Matrix<3,3> Jinv = DLSinv(J);
+
+  // control law - point to point so no pd_dot
+  Matrix<3,1> error_vector;
+  error_vector(0) = ex;
+  error_vector(1) = ey;
+  error_vector(2) = ez;
+
+  Matrix<3,1> qdot = Jinv *(Kp * error_vector);
+
+  // integrate and clamp
+  for(int i = 0; i < 3; i++) {
+    q[i] = constrain(q[i] + qdot(i) * dt, Q_MIN[i], Q_MAX[i]);
+  }
+
+
+}
 
 // ================== SETUP =====================================
 
 void setup(){
+
   pwm.begin();
   pwm.setPWMFreq(50); // servos run at 50Hz
   Serial.begin(115200);
 
-   // Command home position
-    // setServoAngle(0, 90);
-    // setServoAngle(1, 90);
-    // setServoAngle(2, 90);
-    // delay(2000);
+  // go to home position
+  // writeServos();
+  // delay(2000);
 
-    // Nudge joint 1 slightly positive in DH convention
-    // Watch physical joint - does it move the expected direction?
-    float q_test[3] = {M_PI/2, -M_PI/2, 0.0f};
-    for (int i = 0; i < 3; i++) {
-        setServoAngle(i, dhRadtoDeg(q_test[i], i));
-    }
+  // go to non singular starting position
+  q[0] = M_PI/2;
+  q[1] = -M_PI/4;  
+  q[2] = M_PI/4;   
+  writeServos();
+  delay(2000);
 
+
+  float px,py,pz;
+  forward_kinematics(q,px,py,pz);
+  Serial.println("Starting EE position:");
+  Serial.print("x: "); Serial.println(px);
+  Serial.print("y: "); Serial.println(py);
+  Serial.print("z: "); Serial.println(pz);
+  Serial.println("Moving to target...");
+  delay(2000);
+  
 
 };
 
@@ -187,9 +278,30 @@ void setup(){
 
 void loop(){
 
+  // run at 20ms intervals same as dt
+  static unsigned long last_t = 0;
+  unsigned long now = millis();
+
+  if(now - last_t < 20){  // if change dt also need to change this
+    return;
+  }  
+
+  last_t = now;
 
 
+  if(!target_reached) {
+    ControlStep();  // updates q
+    writeServos();  // writes q
+    // Print current EE position for monitoring
+    float px, py, pz;
+    forward_kinematics(q, px, py, pz);
+    Serial.print("EE: ");
+    Serial.print(px); Serial.print(", ");
+    Serial.print(py); Serial.print(", ");
+    Serial.print(pz); Serial.print("  |  error: ");
+    Serial.println(sqrt(pow(pd[0]-px,2)+pow(pd[1]-py,2)+pow(pd[2]-pz,2)));
 
+  }
 
 }
 
