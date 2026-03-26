@@ -17,7 +17,7 @@ using namespace BLA;
 #define J2_START M_PI/3
 
 // starting ee position coords
-#define START_X -3.0  
+#define START_X 0.0  
 #define START_Y -6.5
 #define START_Z 36.76
 
@@ -32,7 +32,7 @@ using namespace BLA;
 
 const float DELTA = 1e-4f; // difference step for jacobian computation
 
-#define CONV_THRESHOLD 3.0 // convergence threshold (cm)
+#define CONV_THRESHOLD 1.0 // convergence threshold (cm)
 #define MAX_ITER 200
 
 
@@ -101,7 +101,7 @@ class RobotArm {
     bool isReachable(float x, float y, float z);
 
     const float a[DOF] = {0.0f, L2, L3};
-    const float d[DOF] = {L1, 3.0f, 0.0f};  // TRY changing 
+    const float d[DOF] = {L1, 0.0f, 0.0f};  // TRY changing 
     const float alpha[DOF] = {-M_PI/2, 0.0f, M_PI};
 
     const float Q_MIN[3] = { 0.0f,   -M_PI,   -M_PI/2}; // +- 90 for each
@@ -113,9 +113,6 @@ class RobotArm {
     const float start_z = START_Z;
 
 };
-
-// ============== ROBOT ARM FUNCTIONS =============================================================================================================
-
 
 // initialise servo driver
 void RobotArm::init_servo_driver(){
@@ -280,20 +277,20 @@ void RobotArm::controlStep(){
 
   // // give up if not converged after max iterations
 
-  if(iter > max_iter){
+  // if(iter > max_iter){
 
-    Serial.println("Failed to reach target - returning to start");
-    target_reached = true; // stop trying 
-    iter = 0;
+  //   Serial.println("Failed to reach target - returning to start");
+  //   target_reached = true; // stop trying 
+  //   iter = 0;
 
-    // go back to safe start pose
-    q[0] = J0_START;
-    q[1] = J1_START;
-    q[2] = J2_START;
-    writeServos();
+  //   // go back to safe start pose
+  //   q[0] = J0_START;
+  //   q[1] = J1_START;
+  //   q[2] = J2_START;
+  //   writeServos();
 
-    return;
-  }
+  //   return;
+  // }
 
   iter++;
 
@@ -336,7 +333,7 @@ void RobotArm::handleSerial() {
         pd[1] = START_Y;
         pd[2] = START_Z;
         target_reached = false;
-        Serial.println("Returning");
+        Serial.println("Homing...");
         return;
     }
 
@@ -346,12 +343,12 @@ void RobotArm::handleSerial() {
         return;
     }
 
-    //get three floats from input
+    // parse three floats from the line
     int first_space  = line.indexOf(' ');
     int second_space = line.indexOf(' ', first_space + 1);
 
     if (first_space == -1 || second_space == -1) {
-        Serial.println("Invalid");
+        Serial.println("Invalid input. Format:  x y z  or  H  or  P");
         return;
     }
 
@@ -359,7 +356,7 @@ void RobotArm::handleSerial() {
     float ny = line.substring(first_space + 1, second_space).toFloat();
     float nz = line.substring(second_space + 1).toFloat();
 
-    Serial.print("Target: [");
+    Serial.print("Requested: [");
     Serial.print(nx, 2); Serial.print(", ");
     Serial.print(ny, 2); Serial.print(", ");
     Serial.print(nz, 2); Serial.println("]");
@@ -369,9 +366,9 @@ void RobotArm::handleSerial() {
         pd[1] = ny;
         pd[2] = nz;
         target_reached = false;
-        Serial.println("Target accepted ");
+        Serial.println("Target accepted - moving...");
     } else {
-        Serial.println("Target rejected ");
+        Serial.println("Target rejected - out of workspace");
     }
 }
 
@@ -425,55 +422,11 @@ RobotArm arm(ServoDriver);
 // float pd[3] = {17, 6, 35}; // works
 // float pd[3] = {17, -5, 30}; // works
 // float pd[3] = {15, -1, 30}; // works
-// float pd[3] = {0, 0, 40}; // works
-// float pd[3] = {15, 0, 30}; // works
+// float pd[3] = {15, -1, 30}; // works
+
+float pd[3] = {15, 0, 30}; // works
 // float pd[3] = {18, -5, 10}; // doesnt work
 // float pd[3] = {18, -5, 15}; // doesnt work
-
-
-// ================= TARGETS LIST ==============================================
-/* with d = 3, start: pi/2, -3pi/4, pi/3, conv = 3cm, kp = 6 lambda = 0.01
-
--3 -6.5 30 works
--3 -20 30 works
--20 0 30  works
--20 5 30 works
--20 10 30 doesnt
--20 5 25 works
-20 5 25 doesnt work 
-17 6 35 doesnt work 
-17 -6 35 works 
--17 6 35 doesnt work 
--16 3 34 works 
-17 -5 30 works 
-15 -1 30 works
-15 1 30 doesnt 
-15 4 30 works
-0 0 40 doesnt
-0 3 40 works
-0 -3 40 works
-3 0 40 doesnt work
--3 0 40 works
-3 3 40 works
--3 -3 40 works
-3 -3 40
-10 -5 40 works 
--10 -5 40 works 
--10 5 40 works 
--10 5 35 works 
--3 10 36 works
--3 15 36 works
-5 15 32 works 
-10 15 23 works
--15 0 27 works
-
-demonstration route
-home - (5,15,32) - (5 15 23) - (-5 15 23) - (-15 0 27)
-
-
-
-*/
-
 
 
 
@@ -485,23 +438,8 @@ void setup() {
   arm.init_servo_driver();
 
   // go to starting position
-  Serial.println("Beginning arm test");
-  Serial.println("Going to home position");
   arm.writeServos();
-
-  // Serial.println(arm.q[0]);
-  // Serial.println(arm.q[1]);
-  // Serial.println(arm.q[2]);
-
-  BLA::Matrix<3,3> Jac ;
-  arm.computeJacobian(Jac);
-  printMatrix(Jac);
-
-  Serial.println(Determinant(Jac));
-
-  // delay(2000);
-
-
+  delay(2000);
 
 
 }

@@ -17,9 +17,9 @@ using namespace BLA;
 #define J2_START M_PI/3
 
 // starting ee position coords
-#define START_X -3.0  
+#define START_X -3.0
 #define START_Y -6.5
-#define START_Z 36.76
+#define START_Z 36.75
 
 // link lengths
 #define L1 12.5 //cm
@@ -32,9 +32,8 @@ using namespace BLA;
 
 const float DELTA = 1e-4f; // difference step for jacobian computation
 
-#define CONV_THRESHOLD 3.0 // convergence threshold (cm)
+#define CONV_THRESHOLD 1.0 // convergence threshold (cm)
 #define MAX_ITER 200
-
 
 // ============== ROBOT ARM CLASS =============================================================================================================
 
@@ -57,9 +56,6 @@ class RobotArm {
     const float pos_threshold = CONV_THRESHOLD;
 
     Adafruit_PWMServoDriver ServoDriver;
-
-    // currrent target position
-    float pd[3] = {START_X, START_Y, START_Z};
 
     RobotArm(Adafruit_PWMServoDriver _ServoDriver) {
         q[0] = J0_START;
@@ -89,19 +85,12 @@ class RobotArm {
     // compute DLS inverse
     Matrix<3,3> DLSinv(BLA::Matrix<3,3>& J);
     // carry out control step 
-    void controlStep();
-
-    // for serial input
-    void handleSerial();   
-    // print end effector position and target              
-    void printStatus();                  
+    void controlStep(float pd_x, float pd_y, float pd_z);
 
   private:
 
-    bool isReachable(float x, float y, float z);
-
     const float a[DOF] = {0.0f, L2, L3};
-    const float d[DOF] = {L1, 3.0f, 0.0f};  // TRY changing 
+    const float d[DOF] = {L1, 0.0f, 0.0f};  // TRY changing 
     const float alpha[DOF] = {-M_PI/2, 0.0f, M_PI};
 
     const float Q_MIN[3] = { 0.0f,   -M_PI,   -M_PI/2}; // +- 90 for each
@@ -113,9 +102,6 @@ class RobotArm {
     const float start_z = START_Z;
 
 };
-
-// ============== ROBOT ARM FUNCTIONS =============================================================================================================
-
 
 // initialise servo driver
 void RobotArm::init_servo_driver(){
@@ -234,24 +220,8 @@ Matrix<3,3> RobotArm::DLSinv(Matrix<3,3>& J) {
 
 }
 
-// is reachable
-bool RobotArm::isReachable(float x, float y, float z) {
-    const float max_reach = L2 + L3;  // 29cm
-    float z_relative = z - 15.5f;
-    float total_dist = sqrt(x*x + y*y + z_relative*z_relative);
-    if (total_dist > max_reach) {
-        Serial.println("REJECT: exceeds max reach");
-        return false;
-    }
-    if (z < 0.0f) {
-        Serial.println("REJECT: below base");
-        return false;
-    }
-    return true;
-}
-
 // Carry out control step 
-void RobotArm::controlStep(){
+void RobotArm::controlStep(float pd_x, float pd_y, float pd_z){
 
   static int iter = 0;
   const int max_iter = MAX_ITER;
@@ -261,9 +231,9 @@ void RobotArm::controlStep(){
   forwardKinematics(q, px, py, pz);
 
   //error
-  float ex = pd[0] - px;
-  float ey = pd[1] - py;
-  float ez = pd[2]- pz;
+  float ex = pd_x - px;
+  float ey = pd_y - py;
+  float ez = pd_z - pz;
   float norm_error = sqrt(ex*ex + ey*ey + ez*ez);
 
   if(norm_error < pos_threshold) {
@@ -271,14 +241,13 @@ void RobotArm::controlStep(){
     if(!target_reached) {
       Serial.println("Target reached");
       target_reached = true;
-      iter = 0;
     }
 
     return;
 
   }
 
-  // // give up if not converged after max iterations
+  // give up if not converged after max iterations
 
   if(iter > max_iter){
 
@@ -317,80 +286,11 @@ void RobotArm::controlStep(){
     q[i] = constrain(q[i] + qdot(i) * dt, Q_MIN[i], Q_MAX[i]);
   }
 
-}
+  Serial.print("q (deg): ");
+  Serial.print(degrees(q[0])); Serial.print(", ");
+  Serial.print(degrees(q[1])); Serial.print(", ");
+  Serial.println(degrees(q[2]));
 
-
-void RobotArm::handleSerial() {
-    // wait until a full line is available (terminated by newline)
-    if (!Serial.available()) return;
-
-    // read entire line into buffer
-    String line = Serial.readStringUntil('\n');
-    line.trim();  // remove whitespace and \r
-
-    if (line.length() == 0) return;
-
-    // H to home
-    if (line == "H" || line == "h") {
-        pd[0] = START_X;
-        pd[1] = START_Y;
-        pd[2] = START_Z;
-        target_reached = false;
-        Serial.println("Returning");
-        return;
-    }
-
-    // P to print status
-    if (line == "P" || line == "p") {
-        printStatus();
-        return;
-    }
-
-    //get three floats from input
-    int first_space  = line.indexOf(' ');
-    int second_space = line.indexOf(' ', first_space + 1);
-
-    if (first_space == -1 || second_space == -1) {
-        Serial.println("Invalid");
-        return;
-    }
-
-    float nx = line.substring(0, first_space).toFloat();
-    float ny = line.substring(first_space + 1, second_space).toFloat();
-    float nz = line.substring(second_space + 1).toFloat();
-
-    Serial.print("Target: [");
-    Serial.print(nx, 2); Serial.print(", ");
-    Serial.print(ny, 2); Serial.print(", ");
-    Serial.print(nz, 2); Serial.println("]");
-
-    if (isReachable(nx, ny, nz)) {
-        pd[0] = nx;
-        pd[1] = ny;
-        pd[2] = nz;
-        target_reached = false;
-        Serial.println("Target accepted ");
-    } else {
-        Serial.println("Target rejected ");
-    }
-}
-
-void RobotArm::printStatus() {
-
-    float px, py, pz;
-    forwardKinematics(q, px, py, pz);
-
-    Serial.print("EE:  [");
-    Serial.print(px,2); Serial.print(", ");
-    Serial.print(py,2); Serial.print(", ");
-    Serial.print(pz,2); Serial.println("]");
-
-    Serial.print("Target: [");
-    Serial.print(pd[0],2); Serial.print(", ");
-    Serial.print(pd[1],2); Serial.print(", ");
-    Serial.print(pd[2],2); Serial.println("]");
-    Serial.print("Error: ");
-    Serial.println(sqrt(pow(pd[0]-px,2)+pow(pd[1]-py,2)+pow(pd[2]-pz,2)), 2);
 }
 
 
@@ -410,6 +310,31 @@ void printMatrix(BLA::Matrix<rows, cols> mat) {
 }
 
 
+// immediate (basic) check if desired point is reachable
+bool isReachable(float x, float y, float z) {
+    
+    // max reach = all links fully extended
+    const float max_reach = L1 + L2;  // 29cm
+
+    // distance from base origin to target in xy plane
+    float xy_dist = sqrt(x*x + y*y);
+    
+    // distance from base origin to target in 3D
+    // account for z offset from d1+d2 = 15.5cm base height
+    float z_relative = z - 15.5f;
+    float total_dist = sqrt(xy_dist*xy_dist + z_relative*z_relative);
+
+    if (total_dist > max_reach) {
+        return false;
+    }
+
+    // check z is above ground (arm cant go below base)
+    if (z < 0.0f) {
+        return false;
+    }
+
+    return true;
+}
 
 // ============================ OBJECTS ============================================
 
@@ -425,55 +350,9 @@ RobotArm arm(ServoDriver);
 // float pd[3] = {17, 6, 35}; // works
 // float pd[3] = {17, -5, 30}; // works
 // float pd[3] = {15, -1, 30}; // works
-// float pd[3] = {0, 0, 40}; // works
 // float pd[3] = {15, 0, 30}; // works
 // float pd[3] = {18, -5, 10}; // doesnt work
-// float pd[3] = {18, -5, 15}; // doesnt work
-
-
-// ================= TARGETS LIST ==============================================
-/* with d = 3, start: pi/2, -3pi/4, pi/3, conv = 3cm, kp = 6 lambda = 0.01
-
--3 -6.5 30 works
--3 -20 30 works
--20 0 30  works
--20 5 30 works
--20 10 30 doesnt
--20 5 25 works
-20 5 25 doesnt work 
-17 6 35 doesnt work 
-17 -6 35 works 
--17 6 35 doesnt work 
--16 3 34 works 
-17 -5 30 works 
-15 -1 30 works
-15 1 30 doesnt 
-15 4 30 works
-0 0 40 doesnt
-0 3 40 works
-0 -3 40 works
-3 0 40 doesnt work
--3 0 40 works
-3 3 40 works
--3 -3 40 works
-3 -3 40
-10 -5 40 works 
--10 -5 40 works 
--10 5 40 works 
--10 5 35 works 
--3 10 36 works
--3 15 36 works
-5 15 32 works 
-10 15 23 works
--15 0 27 works
-
-demonstration route
-home - (5,15,32) - (5 15 23) - (-5 15 23) - (-15 0 27)
-
-
-
-*/
-
+float pd[3] = {18, -5, 15}; // doesnt work
 
 
 
@@ -485,33 +364,24 @@ void setup() {
   arm.init_servo_driver();
 
   // go to starting position
-  Serial.println("Beginning arm test");
-  Serial.println("Going to home position");
   arm.writeServos();
+  delay(2000);
 
-  // Serial.println(arm.q[0]);
-  // Serial.println(arm.q[1]);
-  // Serial.println(arm.q[2]);
-
-  BLA::Matrix<3,3> Jac ;
-  arm.computeJacobian(Jac);
-  printMatrix(Jac);
-
-  Serial.println(Determinant(Jac));
-
-  // delay(2000);
-
-
-
+  Serial.println("Checking if target is reachable");
+  if(isReachable(pd[0],pd[1],pd[2]) == true){
+    Serial.println("target accepted");
+    arm.target_reached = false;
+  }
+  else{
+    Serial.println("Target rejected");
+    arm.target_reached = true;
+  }
 
 }
 
 void loop() {
 
-  // get keyboard input
-  arm.handleSerial();
-
-  // run at 20ms intervals same as dt
+    // run at 20ms intervals same as dt
   static unsigned long last_t = 0;
   unsigned long now = millis();
 
@@ -523,10 +393,17 @@ void loop() {
 
 
   if(!(arm.target_reached)){
-
-    arm.controlStep(); // update q
+    arm.controlStep(pd[0],pd[1],pd[2]); // update q
     arm.writeServos(); // write q 
 
+    // // Print current EE position for monitoring
+    // float px, py, pz;
+    // arm.forwardKinematics(arm.q, px, py, pz);
+    // Serial.print("EE: ");
+    // Serial.print(px); Serial.print(", ");
+    // Serial.print(py); Serial.print(", ");
+    // Serial.print(pz); Serial.print("  |  error: ");
+    // Serial.println(sqrt(pow(pd[0]-px,2)+pow(pd[1]-py,2)+pow(pd[2]-pz,2)));
   }
 
 }
