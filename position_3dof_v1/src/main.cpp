@@ -336,7 +336,8 @@ void RobotArm::handleSerial() {
         pd[1] = START_Y;
         pd[2] = START_Z;
         target_reached = false;
-        Serial.println("Returning");
+        Serial.println("                   ");
+        Serial.println("Returning to start position");
         return;
     }
 
@@ -351,6 +352,7 @@ void RobotArm::handleSerial() {
     int second_space = line.indexOf(' ', first_space + 1);
 
     if (first_space == -1 || second_space == -1) {
+        Serial.println("                   ");
         Serial.println("Invalid");
         return;
     }
@@ -359,6 +361,7 @@ void RobotArm::handleSerial() {
     float ny = line.substring(first_space + 1, second_space).toFloat();
     float nz = line.substring(second_space + 1).toFloat();
 
+    Serial.println("                   ");
     Serial.print("Target: [");
     Serial.print(nx, 2); Serial.print(", ");
     Serial.print(ny, 2); Serial.print(", ");
@@ -369,8 +372,11 @@ void RobotArm::handleSerial() {
         pd[1] = ny;
         pd[2] = nz;
         target_reached = false;
+
+        Serial.println("                   ");
         Serial.println("Target accepted ");
     } else {
+        Serial.println("                   ");
         Serial.println("Target rejected ");
     }
 }
@@ -380,15 +386,18 @@ void RobotArm::printStatus() {
     float px, py, pz;
     forwardKinematics(q, px, py, pz);
 
+    Serial.println("                   ");
     Serial.print("EE:  [");
     Serial.print(px,2); Serial.print(", ");
     Serial.print(py,2); Serial.print(", ");
     Serial.print(pz,2); Serial.println("]");
 
+    Serial.println("                   ");
     Serial.print("Target: [");
     Serial.print(pd[0],2); Serial.print(", ");
     Serial.print(pd[1],2); Serial.print(", ");
     Serial.print(pd[2],2); Serial.println("]");
+    Serial.println("                   ");
     Serial.print("Error: ");
     Serial.println(sqrt(pow(pd[0]-px,2)+pow(pd[1]-py,2)+pow(pd[2]-pz,2)), 2);
 }
@@ -466,6 +475,7 @@ RobotArm arm(ServoDriver);
 5 15 32 works 
 10 15 23 works
 -15 0 27 works
+0 3 40 works 
 
 demonstration route
 home - (5,15,32) - (5 15 23) - (-5 15 23) - (-15 0 27)
@@ -484,22 +494,21 @@ void setup() {
   Serial.begin(115200);
   arm.init_servo_driver();
 
+  // FOR ASSEMBLY
+  // arm.setServoAngle(0,90);
+  // arm.setServoAngle(1,90);
+  // arm.setServoAngle(2,90);
+
   // go to starting position
-  Serial.println("Beginning arm test");
-  Serial.println("Going to home position");
+  Serial.println("                   ");
+  Serial.println("=============== ROBOT ARM TESTING PROGRAM ======================");
+  Serial.println("                   ");
+  Serial.println("Beginning arm test: ");
+  Serial.println("                   ");
+  delay(1000);
+  Serial.println("Going to start position");
+  Serial.println("                   ");
   arm.writeServos();
-
-  // Serial.println(arm.q[0]);
-  // Serial.println(arm.q[1]);
-  // Serial.println(arm.q[2]);
-
-  BLA::Matrix<3,3> Jac ;
-  arm.computeJacobian(Jac);
-  printMatrix(Jac);
-
-  Serial.println(Determinant(Jac));
-
-  // delay(2000);
 
 
 

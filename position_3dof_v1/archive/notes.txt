@@ -39,3 +39,45 @@ with a = -3
 x = 3
 y = -6.5
 z = 36.76
+
+
+
+Target Notes:
+
+with d = 3, start: pi/2, -3pi/4, pi/3, conv = 3cm, kp = 6 lambda = 0.01
+-3 -6.5 30 works
+-3 -20 30 works
+-20 0 30  works
+-20 5 30 works
+-20 10 30 doesnt
+-20 5 25 works
+20 5 25 doesnt work 
+17 6 35 doesnt work 
+17 -6 35 works 
+-17 6 35 doesnt work 
+-16 3 34 works 
+17 -5 30 works 
+15 -1 30 works
+15 1 30 doesnt 
+15 4 30 works
+0 0 40 doesnt
+0 3 40 works
+0 -3 40 works
+3 0 40 doesnt work
+-3 0 40 works
+3 3 40 works
+-3 -3 40 works
+3 -3 40
+10 -5 40 works 
+-10 -5 40 works 
+-10 5 40 works 
+-10 5 35 works 
+-3 10 36 works
+-3 15 36 works
+5 15 32 works 
+10 15 23 works
+-15 0 27 works
+0 3 40 works 
+
+demonstration route
+home - (5,15,32) - (5 15 23) - (-5 15 23) - (-15 0 27)
