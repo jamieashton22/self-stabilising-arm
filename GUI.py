@@ -84,7 +84,7 @@ class RobotUI:
         # Send slider values button
         tk.Button(slider_frame, text="Send Slider Position",
                   command=self.send_slider_pos,
-                  bg="#2196F3", fg="white", width=20
+                  bg="#2196F3", fg="black", width=20
                   ).grid(row=3, column=0, columnspan=3, pady=8)
 
         # ── Text input ─────────────────────────────────────────────────
@@ -104,7 +104,7 @@ class RobotUI:
         self.z_entry.grid(row=0, column=5, padx=4)
 
         tk.Button(text_frame, text="Go", command=self.send_text_pos,
-                  bg="#2196F3", fg="white", width=6
+                  bg="#2196F3", fg="black", width=6
                   ).grid(row=0, column=6, padx=8)
 
         # ── Command buttons ────────────────────────────────────────────
@@ -112,11 +112,11 @@ class RobotUI:
         btn_frame.grid(row=3, column=0, padx=10, sticky="ew")
 
         tk.Button(btn_frame, text="HOME", command=self.send_home,
-                  bg="#FF9800", fg="white", width=12, height=2
+                  bg="#FF9800", fg="black", width=12, height=2
                   ).grid(row=0, column=0, padx=6)
 
         tk.Button(btn_frame, text="Status (P)", command=self.send_status,
-                  bg="#9C27B0", fg="white", width=12, height=2
+                  bg="#9C27B0", fg="black", width=12, height=2
                   ).grid(row=0, column=1, padx=6)
 
         # ── Serial monitor ─────────────────────────────────────────────
