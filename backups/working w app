@@ -240,11 +240,11 @@ bool RobotArm::isReachable(float x, float y, float z) {
     float z_relative = z - 15.5f;
     float total_dist = sqrt(x*x + y*y + z_relative*z_relative);
     if (total_dist > max_reach) {
-        Serial1.println("REJECT: exceeds max reach");
+        Serial.println("REJECT: exceeds max reach");
         return false;
     }
     if (z < 0.0f) {
-        Serial1.println("REJECT: below base");
+        Serial.println("REJECT: below base");
         return false;
     }
     return true;
@@ -269,7 +269,7 @@ void RobotArm::controlStep(){
   if(norm_error < pos_threshold) {
 
     if(!target_reached) {
-      Serial1.println("Target reached");
+      Serial.println("Target reached");
       target_reached = true;
       iter = 0;
     }
@@ -282,7 +282,7 @@ void RobotArm::controlStep(){
 
   if(iter > max_iter){
 
-    Serial1.println("Failed to reach target - returning to start");
+    Serial.println("Failed to reach target - returning to start");
     target_reached = true; // stop trying 
     iter = 0;
 
@@ -321,102 +321,85 @@ void RobotArm::controlStep(){
 
 
 void RobotArm::handleSerial() {
-    static char buf[32];
-    static int buf_idx = 0;
+    // wait until a full line is available (terminated by newline)
+    if (!Serial.available()) return;
 
-    // read character by character - never blocks
-    while (Serial1.available()) {
-        char c = Serial1.read();
+    // read entire line into buffer
+    String line = Serial.readStringUntil('\n');
+    line.trim();  // remove whitespace and \r
 
-        if (c == '\n' || c == '\r') {
-            if (buf_idx == 0) return;   // empty line
-            buf[buf_idx] = '\0';        // null terminate
-            buf_idx = 0;                // reset for next message
+    if (line.length() == 0) return;
 
-            // trim leading spaces
-            char* input = buf;
-            while (*input == ' ') input++;
+    // H to home
+    if (line == "H" || line == "h") {
+        pd[0] = START_X;
+        pd[1] = START_Y;
+        pd[2] = START_Z;
+        target_reached = false;
+        Serial.println("                   ");
+        Serial.println("Returning to start position");
+        return;
+    }
 
-            Serial.print("Buffer received: [");
-            Serial.print(input);
-            Serial.println("]");
+    // P to print status
+    if (line == "P" || line == "p") {
+        printStatus();
+        return;
+    }
 
-            // H to home
-            if ((input[0] == 'H' || input[0] == 'h') && input[1] == '\0') {
-                pd[0] = START_X;
-                pd[1] = START_Y;
-                pd[2] = START_Z;
-                target_reached = false;
-                Serial1.println("Returning to start");
-                return;
-            }
+    //get three floats from input
+    int first_space  = line.indexOf(' ');
+    int second_space = line.indexOf(' ', first_space + 1);
 
-            // P to print status
-            if ((input[0] == 'P' || input[0] == 'p') && input[1] == '\0') {
-                printStatus();
-                return;
-            }
+    if (first_space == -1 || second_space == -1) {
+        Serial.println("                   ");
+        Serial.println("Invalid");
+        return;
+    }
 
-            // parse three floats
-            // float nx, ny, nz;
-            // with this:
-            String s = String(input);
-            s.trim();
-            int first_space  = s.indexOf(' ');
-            int second_space = s.indexOf(' ', first_space + 1);
+    float nx = line.substring(0, first_space).toFloat();
+    float ny = line.substring(first_space + 1, second_space).toFloat();
+    float nz = line.substring(second_space + 1).toFloat();
 
-            if (first_space == -1 || second_space == -1) {
-                Serial1.println("Invalid - use: x y z");
-                return;
-            }
+    Serial.println("                   ");
+    Serial.print("Target: [");
+    Serial.print(nx, 2); Serial.print(", ");
+    Serial.print(ny, 2); Serial.print(", ");
+    Serial.print(nz, 2); Serial.println("]");
 
-            float nx = s.substring(0, first_space).toFloat();
-            float ny = s.substring(first_space + 1, second_space).toFloat();
-            float nz = s.substring(second_space + 1).toFloat();
+    if (isReachable(nx, ny, nz)) {
+        pd[0] = nx;
+        pd[1] = ny;
+        pd[2] = nz;
+        target_reached = false;
 
-            Serial1.print("Target: [");
-            Serial1.print(nx, 2); Serial1.print(", ");
-            Serial1.print(ny, 2); Serial1.print(", ");
-            Serial1.print(nz, 2); Serial1.println("]");
-
-            if (isReachable(nx, ny, nz)) {
-                pd[0] = nx;
-                pd[1] = ny;
-                pd[2] = nz;
-                target_reached = false;
-                Serial1.println("Target accepted");
-            } else {
-                Serial1.println("Target rejected");
-            }
-
-            return;
-        }
-
-        // accumulate into buffer
-        if (buf_idx < 31) {
-            buf[buf_idx++] = c;
-        }
+        Serial.println("                   ");
+        Serial.println("Target accepted ");
+    } else {
+        Serial.println("                   ");
+        Serial.println("Target rejected ");
     }
 }
+
 void RobotArm::printStatus() {
 
     float px, py, pz;
     forwardKinematics(q, px, py, pz);
 
-    Serial1.println("                   ");
-    Serial1.print("EE:  [");
-    Serial1.print(px,2); Serial1.print(", ");
-    Serial1.print(py,2); Serial1.print(", ");
-    Serial1.print(pz,2); Serial1.println("]");
+    Serial.println("                   ");
+    Serial.print("EE:  [");
+    Serial.print(px,2); Serial.print(", ");
+    Serial.print(py,2); Serial.print(", ");
+    Serial.print(pz,2); Serial.println("]");
 
-    Serial1.println("                   ");
-    Serial1.print("Target: [");
-    Serial1.print(pd[0],2); Serial1.print(", ");
-    Serial1.print(pd[1],2); Serial1.print(", ");
-    Serial1.print(pd[2],2); Serial1.println("]");
-    Serial1.println("                   ");
-    Serial1.print("Error: ");
-    Serial1.println(sqrt(pow(pd[0]-px,2)+pow(pd[1]-py,2)+pow(pd[2]-pz,2)), 2);
+    Serial.println("                   ");
+    Serial.print("Target: [");
+    Serial.print(pd[0],2); Serial.print(", ");
+    Serial.print(pd[1],2); Serial.print(", ");
+    Serial.print(pd[2],2); Serial.println("]");
+    Serial.println("                   ");
+    Serial.print("Error: ");
+    Serial.println(sqrt(pow(pd[0]-px,2)+pow(pd[1]-py,2)+pow(pd[2]-pz,2)), 2);
 }
 
 
@@ -508,9 +491,7 @@ home - (5,15,32) - (5 15 23) - (-5 15 23) - (-15 0 27)
 
 void setup() {
 
-  Serial.begin(9600);
-  Serial1.begin(9600);
-  Serial1.setTimeout(0);  // disable any timeout on Serial1 reads - belt and braces
+  Serial.begin(115200);
   arm.init_servo_driver();
 
   // FOR ASSEMBLY
@@ -519,14 +500,14 @@ void setup() {
   // arm.setServoAngle(2,90);
 
   // go to starting position
-  Serial1.println("                   ");
-  Serial1.println("=============== ROBOT ARM TESTING PROGRAM ======================");
-  Serial1.println("                   ");
-  Serial1.println("Beginning arm test: ");
-  Serial1.println("                   ");
+  Serial.println("                   ");
+  Serial.println("=============== ROBOT ARM TESTING PROGRAM ======================");
+  Serial.println("                   ");
+  Serial.println("Beginning arm test: ");
+  Serial.println("                   ");
   delay(1000);
-  Serial1.println("Going to start position");
-  Serial1.println("                   ");
+  Serial.println("Going to start position");
+  Serial.println("                   ");
   arm.writeServos();
 
 

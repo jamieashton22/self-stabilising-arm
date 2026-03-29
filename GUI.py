@@ -148,8 +148,9 @@ class RobotUI:
         if not self.connected:
             try:
                 port = self.port_var.get()
-                self.serial = serial.Serial(port, 115200, timeout=1)
+                self.serial = serial.Serial(port, 9600, timeout=1)
                 time.sleep(2)  # wait for Arduino reset
+                
                 self.connected = True
                 self.conn_btn.config(text="Disconnect", bg="#f44336")
                 self.status_label.config(text="Connected", fg="green")
