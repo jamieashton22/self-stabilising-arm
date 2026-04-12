@@ -33,7 +33,16 @@ using namespace BLA;
 const float DELTA = 1e-4f; // difference step for jacobian computation
 
 #define CONV_THRESHOLD 1.0 // convergence threshold (cm)
-#define MAX_ITER 200
+#define MAX_ITER 500
+
+// trajectory parameters
+#define END_X 10
+#define END_Y 0
+#define END_Z 38
+
+#define T_total 3.0f
+
+#define QDOT_MAX 3 // max joint veloc.
 
 // ============== ROBOT ARM CLASS =============================================================================================================
 
@@ -85,7 +94,10 @@ class RobotArm {
     // compute DLS inverse
     Matrix<3,3> DLSinv(BLA::Matrix<3,3>& J);
     // carry out control step 
-    void controlStep(float pd_x, float pd_y, float pd_z);
+    void pointControlStep(float pd_x, float pd_y, float pd_z);
+    // trajectory control step
+    void trajectoryControlStep(float pd_x, float pd_y, float pd_z, float pddot_x, float pddot_y, float pddot_z);
+
 
   private:
 
@@ -100,6 +112,9 @@ class RobotArm {
     const float start_x = START_X;
     const float start_y = START_Y ;
     const float start_z = START_Z;
+
+    // max joint velocity
+    const float qdot_max = QDOT_MAX;
 
 };
 
@@ -221,7 +236,7 @@ Matrix<3,3> RobotArm::DLSinv(Matrix<3,3>& J) {
 }
 
 // Carry out control step 
-void RobotArm::controlStep(float pd_x, float pd_y, float pd_z){
+void RobotArm::pointControlStep(float pd_x, float pd_y, float pd_z){
 
   static int iter = 0;
   const int max_iter = MAX_ITER;
@@ -286,12 +301,65 @@ void RobotArm::controlStep(float pd_x, float pd_y, float pd_z){
     q[i] = constrain(q[i] + qdot(i) * dt, Q_MIN[i], Q_MAX[i]);
   }
 
-  Serial.print("q (deg): ");
-  Serial.print(degrees(q[0])); Serial.print(", ");
-  Serial.print(degrees(q[1])); Serial.print(", ");
-  Serial.println(degrees(q[2]));
 
 }
+
+// Trajectory Control Step
+
+void RobotArm::trajectoryControlStep(float pd_x, float pd_y, float pd_z, float pddot_x, float pddot_y, float pddot_z){
+
+  // get current EE position
+  float px, py, pz;
+  forwardKinematics(q, px, py, pz);
+
+  //error
+  float ex = pd_x - px;
+  float ey = pd_y - py;
+  float ez = pd_z - pz;
+  float norm_error = sqrt(ex*ex + ey*ey + ez*ez);
+
+  Serial.print("pd: "); Serial.print(pd_x); Serial.print(", ");
+                          Serial.print(pd_y); Serial.print(", ");
+                          Serial.println(pd_z);
+  Serial.print("EE: "); Serial.print(px);   Serial.print(", ");
+                          Serial.print(py);   Serial.print(", ");
+                          Serial.println(pz);
+  Serial.print("err: "); Serial.println(norm_error);
+
+  // jacobian and inverse
+  Matrix<3,3> J;
+  computeJacobian(J);
+  Matrix<3,3> Jinv = DLSinv(J);
+
+  // control law
+  Matrix<3,1> pdot_cmd;
+  pdot_cmd(0) = pddot_x + Kp * ex;
+  pdot_cmd(1) = pddot_y + Kp * ey;
+  pdot_cmd(2) = pddot_z + Kp * ez;
+
+  Matrix<3,1> qdot_cmd;
+  qdot_cmd = Jinv * pdot_cmd;
+
+  // clamp joint velocities to prevent aggressive motion
+  for (int i = 0; i < DOF; i++) {
+      qdot_cmd(i) = constrain(qdot_cmd(i), -QDOT_MAX, QDOT_MAX);
+  }
+
+  // integrate
+  for (int i = 0; i < DOF; i++) {
+    q[i] = constrain(q[i] + qdot_cmd(i) * dt, Q_MIN[i], Q_MAX[i]);
+  }
+
+  // // check convergence only after trajectory is complete
+  //   if (norm_error < pos_threshold) {
+  //       if (!target_reached) {
+  //           Serial.println("Trajectory complete - target reached");
+  //           target_reached = true;
+  //       }
+  //   }
+
+}
+
 
 
 // ========== MISC FUNCTIONS =========================================
@@ -341,20 +409,7 @@ bool isReachable(float x, float y, float z) {
 Adafruit_PWMServoDriver ServoDriver = Adafruit_PWMServoDriver(0x40);
 RobotArm arm(ServoDriver);
 
-// ========================= TARGET =============================================
-// float pd[3] = {START_X, START_Y + 5.0f, START_Z - 10.0f}; // -z WORKED
-// float pd[3] = {START_X, START_Y, START_Z - 5000.0f}; // -z WORKED
-// float pd[3] = {-3, -20, 30}; // WORKS
-// float pd[3] = {-20, 0, 30}; // works
-// float pd[3] = {20, 0, 30}; // works
-// float pd[3] = {17, 6, 35}; // works
-// float pd[3] = {17, -5, 30}; // works
-// float pd[3] = {15, -1, 30}; // works
-// float pd[3] = {15, 0, 30}; // works
-// float pd[3] = {18, -5, 10}; // doesnt work
-float pd[3] = {18, -5, 15}; // doesnt work
-
-
+float vel[3];
 
 // ============================= SETUP =============================================
 
@@ -367,15 +422,20 @@ void setup() {
   arm.writeServos();
   delay(2000);
 
-  Serial.println("Checking if target is reachable");
-  if(isReachable(pd[0],pd[1],pd[2]) == true){
-    Serial.println("target accepted");
-    arm.target_reached = false;
+  // check end point reachable
+  if(!isReachable(END_X, END_Y,END_Z)){
+    Serial.println("End point not reachable ");
+    while(true);
   }
-  else{
-    Serial.println("Target rejected");
-    arm.target_reached = true;
-  }
+
+  // compute constant velocity vector
+  vel[0] = (END_X - START_X)/T_total;
+  vel[1] = (END_Y - START_Y)/T_total;
+  vel[2] = (END_Z - START_Z)/T_total;
+
+  Serial.println("Starting trajectory");
+
+
 
 }
 
@@ -383,6 +443,8 @@ void loop() {
 
     // run at 20ms intervals same as dt
   static unsigned long last_t = 0;
+  static float t = 0.0f;
+
   unsigned long now = millis();
 
   if(now - last_t < (DT*1000)){  
@@ -391,19 +453,29 @@ void loop() {
 
   last_t = now;
 
-
-  if(!(arm.target_reached)){
-    arm.controlStep(pd[0],pd[1],pd[2]); // update q
-    arm.writeServos(); // write q 
-
-    // // Print current EE position for monitoring
-    // float px, py, pz;
-    // arm.forwardKinematics(arm.q, px, py, pz);
-    // Serial.print("EE: ");
-    // Serial.print(px); Serial.print(", ");
-    // Serial.print(py); Serial.print(", ");
-    // Serial.print(pz); Serial.print("  |  error: ");
-    // Serial.println(sqrt(pow(pd[0]-px,2)+pow(pd[1]-py,2)+pow(pd[2]-pz,2)));
+  if(arm.target_reached){
+    return;
   }
+
+  // clamp time
+  float t_clamped = min(t,T_total);
+  
+  // desired position at time t
+  float pd[3] = {
+    START_X + vel[0] * t_clamped,
+    START_Y + vel[1] * t_clamped,
+    START_Z + vel[2] * t_clamped
+  };
+
+  // desired velocity - constant then zero once reachedd
+  float pddot[3] = {
+        (t < T_total) ? vel[0] : 0.0f,
+        (t < T_total) ? vel[1] : 0.0f,
+        (t < T_total) ? vel[2] : 0.0f
+    };
+
+  arm.trajectoryControlStep(pd[0], pd[1], pd[2], pddot[0], pddot[1], pddot[2]);
+  arm.writeServos();
+  t += DT;
 
 }

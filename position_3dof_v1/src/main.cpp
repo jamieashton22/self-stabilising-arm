@@ -26,7 +26,7 @@ using namespace BLA;
 #define L2 14.5
 #define L3 14.5
 
-#define KP 50.0 // controller gain
+#define KP 10.0 // controller gain
 #define LAMBDA 0.01 // for DLS pseudoinv
 #define DT 0.02 // dt
 
