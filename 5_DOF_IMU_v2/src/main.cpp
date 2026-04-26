@@ -12,6 +12,10 @@ with position convergence 10
 0 30 24
 30 0 
 
+TESTING: pos conv 10, ori conv 5
+kp_pos 3, kp_ori 1
+H -> 20 0 35
+
 */
 
 #include <Arduino.h>
@@ -50,9 +54,9 @@ using namespace BLA;
 #define L4 1.0 
 #define L5 7.0
 
-#define KP_POS 10.0f // position gain
-#define KP_ORI 5.0f // orientation gain
-#define LAMBDA 0.05 // for DLS pseudoinv
+#define KP_POS 3.0f // position gain
+#define KP_ORI 2.0f // orientation gain
+#define LAMBDA 0.1 // for DLS pseudoinv
 #define DT 0.02 // dt
 
 // comp filter alpha 
@@ -62,8 +66,8 @@ const float DELTA = 1e-4f; // difference step for jacobian computation
 
 #define CONV_THRESHOLD 10.0 // convergence threshold (cm)
 // #define ORI_THRESHOLD 0.05f // in rad
-#define ORI_THRESHOLD (DEG_TO_RAD * 10) // in rad
-#define MAX_ITER 40
+#define ORI_THRESHOLD (DEG_TO_RAD * 5) // in rad
+#define MAX_ITER 100
 
 
 class IMUHandler {
