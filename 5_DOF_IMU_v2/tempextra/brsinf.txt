@@ -1,0 +1,472 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <BasicLinearAlgebra.h>
+#include <Adafruit_PWMServoDriver.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+#include <math.h>
+using namespace BLA;
+
+// =============== MACROS and GLOBALS ===============================================================
+
+#define SERVO_MIN 100
+#define SERVO_MAX 550
+
+#define J0_START  M_PI/2
+#define J1_START  -3*M_PI/4
+#define J2_START  M_PI/3
+#define J3_START  0.0f
+#define J4_START  0.0f
+
+#define START_X  -3.0f
+#define START_Y  -6.5f
+#define START_Z   35.76f
+
+#define L1  12.5f
+#define L2  14.5f
+#define L3  14.5f
+#define L4   1.0f
+#define L5   7.0f
+
+// Unified controller gains
+#define KP      50.0f   // position gain
+#define KO       1.0f   // orientation gain (separate — different units)
+#define LAMBDA   0.01f
+#define DT       0.01f
+
+#define ALPHA_CF    0.94f
+
+#define SERVO_CH_J3  3
+#define SERVO_CH_J4  4
+
+#define CONV_THRESHOLD  5.0f
+#define ORI_THRESH      (0.0872 * 2) // 5 deg
+
+#define MAX_ITER        50
+
+const float DELTA = 1e-4f;
+
+// ============== IMU WRAPPER ====================================================================
+
+class IMUHandler {
+  public:
+    Adafruit_MPU6050 mpu;
+    float roll  = 0.0f;
+    float pitch = 0.0f;
+
+    bool begin() {
+      if (!mpu.begin()) return false;
+      mpu.setAccelerometerRange(MPU6050_RANGE_2_G);
+      mpu.setGyroRange(MPU6050_RANGE_500_DEG);
+      mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+      return true;
+    }
+
+    void update(float dt) {
+      sensors_event_t a, g, temp;
+      mpu.getEvent(&a, &g, &temp);
+
+      float ax = a.acceleration.x;
+      float ay = a.acceleration.y;
+      float az = a.acceleration.z;
+
+      float accel_roll  = atan2f(ay, az);
+      float accel_pitch = atan2f(-ax, sqrtf(ay*ay + az*az));
+
+      float gx = g.gyro.x;
+      float gy = g.gyro.y;
+
+      roll  = ALPHA_CF * (roll  + gx * dt) + (1.0f - ALPHA_CF) * accel_roll;
+      pitch = ALPHA_CF * (pitch + gy * dt) + (1.0f - ALPHA_CF) * accel_pitch;
+    }
+};
+
+// ============== ROBOT ARM CLASS ===============================================================
+
+class RobotArm {
+  public:
+
+    static const int DOF = 5;
+
+    float q[DOF];
+
+    float Kp     = KP;
+    float Ko     = KO;
+    float lambda = LAMBDA;
+    float dt     = DT;
+
+    bool target_reached = false;
+    const float pos_threshold = CONV_THRESHOLD;
+
+    Adafruit_PWMServoDriver ServoDriver;
+
+    float pd[3]  = {START_X, START_Y, START_Z};
+    float od[2]  = {0.0f, 0.0f};   // desired roll, pitch (level)
+
+    // Measured orientation — updated each loop from IMU before controlStep()
+    float roll_meas  = 0.0f;
+    float pitch_meas = 0.0f;
+
+    const float q_home_rad[5] = {M_PI/2, -M_PI/2, 0.0f, 0.0f, 0.0f};
+    const float servo_dir[5]  = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+
+    RobotArm(Adafruit_PWMServoDriver _ServoDriver) {
+      q[0] = J0_START; q[1] = J1_START; q[2] = J2_START;
+      q[3] = J3_START; q[4] = J4_START;
+      ServoDriver = _ServoDriver;
+    }
+
+    void init_servo_driver();
+    int  angleToPulse(int angle);
+    void setServoAngle(uint8_t channel, int angle);
+    int  dhRadtoDeg(float dh_rad, int joint);
+    void writeServos();
+
+    void dhTransform(float theta, float a, float d, float alpha, Matrix<4,4>& H);
+
+    // Full FK — chains all 5 joints, returns EE position AND orientation
+    void forwardKinematicsFull(float* q_in,
+                               float& x, float& y, float& z,
+                               float& roll_out, float& pitch_out);
+
+    // Orientation extracted from a 4×4 homogeneous transform
+    void rotToRollPitch(const Matrix<4,4>& H, float& roll_out, float& pitch_out);
+
+    // Unified 5×5 Jacobian (rows: x,y,z,roll,pitch  cols: q0..q4)
+    void computeJacobian(Matrix<5,5>& J);
+
+    // DLS pseudoinverse of a 5×5 matrix
+    Matrix<5,5> DLSinv(Matrix<5,5>& J);
+
+    // Single unified control step — all 5 joints
+    void controlStep();
+
+    void handleSerial();
+    void printStatus();
+
+  private:
+    bool isReachable(float x, float y, float z);
+
+    // Full DH parameter tables — all 5 joints
+    const float a_dh[5]     = {0.0f,  L2,    L3,    L4,    L5};
+    const float d_dh[5]     = {L1,   3.0f,  0.0f,  0.0f,  0.0f};
+    const float alpha_dh[5] = {-M_PI/2, 0.0f, M_PI, -M_PI/2, 0.0f};
+
+    const float Q_MIN[5] = { 0.0f,  -M_PI,   -M_PI/2,  -M_PI/2,  -M_PI/2};
+    const float Q_MAX[5] = { M_PI,   0.0f,    M_PI/2,   M_PI/2,   M_PI/2};
+};
+
+// ============== ROBOT ARM FUNCTIONS ===========================================================
+
+void RobotArm::init_servo_driver() {
+  ServoDriver.begin();
+  ServoDriver.setPWMFreq(50);
+}
+
+int RobotArm::angleToPulse(int angle) {
+  return map(angle, 0, 180, SERVO_MIN, SERVO_MAX);
+}
+
+void RobotArm::setServoAngle(uint8_t channel, int angle) {
+  ServoDriver.setPWM(channel, 0, angleToPulse(angle));
+}
+
+int RobotArm::dhRadtoDeg(float dh_rad, int joint) {
+  float delta_rad = dh_rad - q_home_rad[joint];
+  float delta_deg = RAD_TO_DEG * delta_rad * servo_dir[joint];
+  return constrain((int)(90.0f + delta_deg), 0, 180);
+}
+
+void RobotArm::writeServos() {
+  for (int i = 0; i < DOF; i++) {
+    setServoAngle(i, dhRadtoDeg(q[i], i));
+  }
+}
+
+void RobotArm::dhTransform(float theta, float a, float d, float alpha, Matrix<4,4>& H) {
+  H = {cos(theta), -sin(theta)*cos(alpha),  sin(theta)*sin(alpha), a*cos(theta),
+       sin(theta),  cos(theta)*cos(alpha), -cos(theta)*sin(alpha), a*sin(theta),
+       0,           sin(alpha),             cos(alpha),            d,
+       0,           0,                      0,                     1};
+}
+
+// Extract roll and pitch from a rotation matrix (ZYX Euler convention).
+// Roll  (phi)  = atan2(R32, R33)
+// Pitch (psi)  = atan2(-R31, sqrt(R32^2 + R33^2))
+void RobotArm::rotToRollPitch(const Matrix<4,4>& H, float& roll_out, float& pitch_out) {
+  float r31 = H(2,0);
+  float r32 = H(2,1);
+  float r33 = H(2,2);
+  roll_out  = atan2f(r32, r33);
+  pitch_out = atan2f(-r31, sqrtf(r32*r32 + r33*r33));
+}
+
+// Full forward kinematics — chains all 5 DH frames.
+void RobotArm::forwardKinematicsFull(float* q_in,
+                                      float& x, float& y, float& z,
+                                      float& roll_out, float& pitch_out) {
+  Matrix<4,4> H = {1,0,0,0,
+                   0,1,0,0,
+                   0,0,1,0,
+                   0,0,0,1};
+  Matrix<4,4> Hi;
+  for (int i = 0; i < DOF; i++) {
+    dhTransform(q_in[i], a_dh[i], d_dh[i], alpha_dh[i], Hi);
+    H = H * Hi;
+  }
+  x = H(0,3);
+  y = H(1,3);
+  z = H(2,3);
+  rotToRollPitch(H, roll_out, pitch_out);
+}
+
+// Unified 5×5 Jacobian via numerical differentiation.
+// Task space: [x, y, z, roll, pitch]  (5 outputs)
+// Joint space: [q0 .. q4]             (5 inputs)
+void RobotArm::computeJacobian(Matrix<5,5>& J) {
+  float x0, y0, z0, r0, p0;
+  forwardKinematicsFull(q, x0, y0, z0, r0, p0);
+
+  for (int i = 0; i < DOF; i++) {
+    float q_pert[5] = {q[0], q[1], q[2], q[3], q[4]};
+    q_pert[i] += DELTA;
+
+    float xp, yp, zp, rp, pp;
+    forwardKinematicsFull(q_pert, xp, yp, zp, rp, pp);
+
+    J(0,i) = (xp - x0) / DELTA;   // dx/dqi
+    J(1,i) = (yp - y0) / DELTA;   // dy/dqi
+    J(2,i) = (zp - z0) / DELTA;   // dz/dqi
+    J(3,i) = (rp - r0) / DELTA;   // droll/dqi
+    J(4,i) = (pp - p0) / DELTA;   // dpitch/dqi
+  }
+}
+
+// DLS pseudoinverse: J# = J^T (J J^T + λ²I)^-1   (5×5 system)
+Matrix<5,5> RobotArm::DLSinv(Matrix<5,5>& J) {
+  Matrix<5,5> Jt  = ~J;
+  Matrix<5,5> JJt = J * Jt;
+  for (int i = 0; i < 5; i++) JJt(i,i) += lambda * lambda;
+  return Jt * Inverse(JJt);
+}
+
+// Unified control step — implements Eq. 4-7 from the report.
+// Position error from FK; orientation error from IMU measurement.
+void RobotArm::controlStep() {
+  static int iter = 0;
+
+  // --- Current EE state ---
+  float px, py, pz, roll_fk, pitch_fk;
+  forwardKinematicsFull(q, px, py, pz, roll_fk, pitch_fk);
+
+  // --- Position error ---
+  float ex = pd[0] - px;
+  float ey = pd[1] - py;
+  float ez = pd[2] - pz;
+  float pos_err = sqrtf(ex*ex + ey*ey + ez*ez);
+
+  // --- Orientation error (IMU is the measurement, not FK) ---
+  // The IMU directly observes the EE frame orientation relative to gravity,
+  // which is more reliable than deriving it purely from joint angles.
+  float er = od[0] - roll_meas;
+  float ep = od[1] - pitch_meas;
+  float ori_err = sqrtf(er*er + ep*ep);
+
+  if (pos_err < pos_threshold && ori_err < ORI_THRESH) {
+    if (!target_reached) {
+      Serial.println("Target reached");
+      target_reached = true;
+      iter = 0;
+    }
+    return;
+  }
+
+  if (iter > MAX_ITER) {
+    Serial.println("Failed to reach target - returning to start");
+    target_reached = true;
+    iter = 0;
+    for (int i = 0; i < DOF; i++) q[i] = (i==0?J0_START : i==1?J1_START : i==2?J2_START : 0.0f);
+    writeServos();
+    return;
+  }
+
+  iter++;
+
+  // --- Unified 5D error vector: [Kp*ep; Ko*eo] ---
+  // Separate gains because position (cm) and orientation (rad) have different scales.
+  Matrix<5,1> err;
+  err(0) = Kp * ex;
+  err(1) = Kp * ey;
+  err(2) = Kp * ez;
+  err(3) = Ko * er;
+  err(4) = Ko * ep;
+
+  // --- 5×5 Jacobian and DLS inverse ---
+  Matrix<5,5> J;
+  computeJacobian(J);
+  Matrix<5,5> Jinv = DLSinv(J);
+
+  // --- Joint velocity: qdot = J# * Pdot  (Eq. 5) ---
+  Matrix<5,1> qdot = Jinv * err;
+
+  // --- Integrate: q_{k+1} = q_k + qdot * dt  (Eq. 7) ---
+  for (int i = 0; i < DOF; i++) {
+    q[i] = constrain(q[i] + qdot(i) * dt, Q_MIN[i], Q_MAX[i]);
+  }
+}
+
+bool RobotArm::isReachable(float x, float y, float z) {
+  const float max_reach = L2 + L3;
+  float z_relative = z - 15.5f;
+  float total_dist  = sqrtf(x*x + y*y + z_relative*z_relative);
+  if (total_dist > max_reach) { Serial.println("REJECT: exceeds max reach"); return false; }
+  if (z < 0.0f)               { Serial.println("REJECT: below base");        return false; }
+  return true;
+}
+
+void RobotArm::handleSerial() {
+  if (!Serial.available()) return;
+
+  String line = Serial.readStringUntil('\n');
+  line.trim();
+  if (line.length() == 0) return;
+
+  if (line == "H" || line == "h") {
+    pd[0] = START_X; pd[1] = START_Y; pd[2] = START_Z;
+    target_reached = false;
+    Serial.println("\nReturning to start position");
+    return;
+  }
+
+  if (line == "X" || line == "x") {
+    q[0]=J0_START; q[1]=J1_START; q[2]=J2_START; q[3]=J3_START; q[4]=J4_START;
+    target_reached = true;
+    Serial.println("\nsafe");
+    return;
+  }
+
+  if (line == "W" || line == "w") { pd[1] += 2.0f; target_reached = false; Serial.print("Y+  Target Y: "); Serial.println(pd[1], 2); return; }
+  if (line == "S" || line == "s") { pd[1] -= 2.0f; target_reached = false; Serial.print("Y-  Target Y: "); Serial.println(pd[1], 2); return; }
+  if (line == "A" || line == "a") { pd[0] -= 2.0f; target_reached = false; Serial.print("X-  Target X: "); Serial.println(pd[0], 2); return; }
+  if (line == "D" || line == "d") { pd[0] += 2.0f; target_reached = false; Serial.print("X+  Target X: "); Serial.println(pd[0], 2); return; }
+  if (line == "Q" || line == "q") { pd[2] += 2.0f; target_reached = false; Serial.print("Z+  Target Z: "); Serial.println(pd[2], 2); return; }
+  if (line == "E" || line == "e") { pd[2] -= 2.0f; target_reached = false; Serial.print("Z-  Target Z: "); Serial.println(pd[2], 2); return; }
+
+  if (line == "P" || line == "p") { printStatus(); return; }
+
+  int first_space  = line.indexOf(' ');
+  int second_space = line.indexOf(' ', first_space + 1);
+
+  if (first_space == -1 || second_space == -1) { Serial.println("\nInvalid"); return; }
+
+  float nx = line.substring(0, first_space).toFloat();
+  float ny = line.substring(first_space + 1, second_space).toFloat();
+  float nz = line.substring(second_space + 1).toFloat();
+
+  Serial.print("\nTarget: ["); Serial.print(nx,2); Serial.print(", ");
+  Serial.print(ny,2); Serial.print(", "); Serial.print(nz,2); Serial.println("]");
+
+  if (isReachable(nx, ny, nz)) {
+    pd[0] = nx; pd[1] = ny; pd[2] = nz;
+    target_reached = false;
+    Serial.println("Target accepted");
+  } else {
+    Serial.println("Target rejected");
+  }
+}
+
+void RobotArm::printStatus() {
+  float px, py, pz, r, p;
+  forwardKinematicsFull(q, px, py, pz, r, p);
+
+  Serial.print("\nEE pos:  ["); Serial.print(px,2); Serial.print(", ");
+  Serial.print(py,2); Serial.print(", "); Serial.print(pz,2); Serial.println("]");
+  Serial.print("Target:  ["); Serial.print(pd[0],2); Serial.print(", ");
+  Serial.print(pd[1],2); Serial.print(", "); Serial.print(pd[2],2); Serial.println("]");
+  Serial.print("Pos err: ");
+  Serial.println(sqrtf(powf(pd[0]-px,2)+powf(pd[1]-py,2)+powf(pd[2]-pz,2)), 2);
+  Serial.print("IMU roll:  "); Serial.print(RAD_TO_DEG * roll_meas,  1); Serial.println(" deg");
+  Serial.print("IMU pitch: "); Serial.print(RAD_TO_DEG * pitch_meas, 1); Serial.println(" deg");
+}
+
+// ========== MISC ============================================================
+
+template <int rows, int cols>
+void printMatrix(BLA::Matrix<rows, cols> mat) {
+  for (int i = 0; i < rows; i++) {
+    for (int j = 0; j < cols; j++) { Serial.print(mat(i,j)); Serial.print("\t"); }
+    Serial.println();
+  }
+  Serial.println();
+}
+
+// ========================= OBJECTS ==========================================
+
+Adafruit_PWMServoDriver ServoDriver = Adafruit_PWMServoDriver(0x40);
+RobotArm  arm(ServoDriver);
+IMUHandler imu;
+
+// ========================= SETUP ============================================
+
+void setup() {
+  Serial.begin(115200);
+  arm.init_servo_driver();
+
+  if (!imu.begin()) {
+    Serial.println("ERROR: MPU6050 not found");
+    while (1) delay(10);
+  }
+  Serial.println("MPU6050 ready");
+  Serial.println("\n===== ROBOT ARM — UNIFIED 5-DOF CONTROLLER =====");
+  delay(1000);
+  arm.writeServos();
+
+  // arm.init_servo_driver();
+  // arm.setServoAngle(3, 90);
+  // arm.setServoAngle(4, 90);
+  // while(1);
+}
+
+// ========================= LOOP =============================================
+
+void loop() {
+  arm.handleSerial();
+
+  static unsigned long last_t = 0;
+  unsigned long now = millis();
+  if (now - last_t < (unsigned long)(DT * 1000)) return;
+  last_t = now;
+
+  // 1. Update IMU
+  imu.update(DT);
+
+  // 2. Pass IMU measurements into arm for use in controlStep
+  arm.roll_meas  = imu.roll;
+  arm.pitch_meas = imu.pitch;
+
+  // 3. Unified control step — all 5 joints simultaneously
+  if (!arm.target_reached) {
+    arm.controlStep();
+  }
+  // 4. Write all servos
+  arm.writeServos();
+
+  // imu.update(DT);
+  
+  // Serial.print("Roll: ");  Serial.print(RAD_TO_DEG * imu.roll,  1);
+  // Serial.print("  Pitch: "); Serial.println(RAD_TO_DEG * imu.pitch, 1);
+  
+  delay(100);
+}
+
+// NOTES: Kp = 50
+/* -3 6 35 works
+home - (5,15,32) - (5 15 23) - (-5 15 23) - (-15 0 27)
+-3 10 30 works, -3 10 30 -> 10 3 30
+3 7 35 works -> 3 12 35 works
+H -> -3, 15, 32 -> -3 15 25 -> 15 -3 25
+H -> 15 -3 25 -> 15 -3 35 -> 15 -6 35 works
+H -> -3 -15 25
+H -> -3 6 32
+H-? -6 3 32
+*/
